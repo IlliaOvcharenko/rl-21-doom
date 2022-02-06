@@ -59,5 +59,6 @@ RUN cd dotfiles && ./install && cd ../
 RUN echo dprompt >> /home/$USER_NAME/.bashrc
 
 
+ENV DISPLAY=:1
 CMD ["/bin/bash"]
 
