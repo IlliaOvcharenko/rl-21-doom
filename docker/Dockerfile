@@ -53,6 +53,10 @@ RUN pip install fire
 RUN pip install tqdm
 
 
+# Install PyTorch
+RUN pip install torch==1.8.0+cu111 torchvision==0.9.0+cu111 -f https://download.pytorch.org/whl/cu111/torch_stable.html
+
+
 # Install dotfiles
 RUN git clone https://github.com/IlliaOvcharenko/dotfiles
 RUN cd dotfiles && ./install && cd ../
