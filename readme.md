@@ -1,3 +1,3 @@
 # 👾 Doom
-!(doom-exmpl)[figs/doom-exmpl.png]
+![doom-exmpl](figs/doom-exmpl.png)
 
