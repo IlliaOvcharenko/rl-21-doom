@@ -3,6 +3,10 @@ __vizdoom
 _vizdoom.ini
 vizdoom-crash.log
 
+
+# Archive
+archive/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
