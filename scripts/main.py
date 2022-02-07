@@ -1,3 +1,6 @@
+import sys,os
+sys.path.append(os.getcwd())
+
 import torch
 import cv2
 
@@ -10,8 +13,13 @@ from itertools import product
 from pathlib import Path
 from fire import Fire
 
+from src.models import (DuelQNet,
+                        DummyQNet)
+from src.frameio import (save_gif,
+                         save_video)
 
-def init_game(scenario):
+
+def init_game(scenario, random_state):
     scenarios_folder = Path(vzd.scenarios_path)
 
     assert scenario in ["basic", "deadly_corridor"]
@@ -24,13 +32,14 @@ def init_game(scenario):
     game.load_config(str(config_file_path))
     game.set_window_visible(False)
     game.set_mode(vzd.Mode.PLAYER)
-    game.set_screen_format(vzd.ScreenFormat.GRAY8)
+    game.set_screen_format(vzd.ScreenFormat.RGB24)
     game.set_screen_resolution(vzd.ScreenResolution.RES_640X480)
     game.init()
 
     n = game.get_available_buttons_size()
     actions = [list(a) for a in product([0, 1], repeat=n)]
 
+    game.set_seed(random_state)
     return game, actions
 
 
@@ -54,12 +63,7 @@ class ExperienceReplayBuffer:
 class StatesDeque:
     def __init__(self, stack_size, screen_shape):
         self.stack_size = stack_size
-
-        # in case of grey scale remove channel dim
-        if screen_shape[-1] == 1:
-            screen_shape = screen_shape[:2]
         self.screen_shape = screen_shape
-
         self.mem = None
         self.reset()
 
@@ -80,9 +84,7 @@ class StatesDeque:
 
 
 class Agent:
-    """
-    interact with doom env
-    """
+    """ interact with doom env """
     def __init__(
             self,
             game,
@@ -97,9 +99,13 @@ class Agent:
         self.frame_repeat = frame_repeat
 
         self.actions = actions
-        self.screen_shape = (self.game.get_screen_height(),
-                             self.game.get_screen_width(),
-                             self.game.get_screen_channels())
+        screen_shape = (self.game.get_screen_height(),
+                        self.game.get_screen_width(),
+                        self.game.get_screen_channels())
+        # in case of grey scale remove channel dim
+        if screen_shape[-1] == 1:
+            screen_shape = screen_shape[:2]
+        self.screen_shape = screen_shape
 
         self.states_deque = StatesDeque(state_stack_size, self.screen_shape)
         # TODO refactor cur_frames, it is strange
@@ -139,6 +145,7 @@ class Agent:
         action = self.get_action(state, model, epsilon)
 
         self.game.set_action(action)
+        next_state = np.zeros(self.screen_shape)
         for _ in range(self.frame_repeat):
             self.game.advance_action()
             reward = self.game.get_last_reward()
@@ -162,53 +169,134 @@ class Agent:
 
         return reward, done
 
-class DummyQNet:
-    def __init__(self, action_space_size):
-        # TODO add stratery like rand, fixed_ation, etc.
-        # self.strategy = strategy
-        self.action_space_size = action_space_size
-
-    def __call__(self, x):
-        batch_size = x.shape[0]
-        return torch.rand((batch_size, self.action_space_size))
-
-
-def save_gif(save_fn, frames, fps):
-    from PIL import Image
-
-    frames = [Image.fromarray(f) for f in frames]
-    frame, *frames = frames
-    ms_per_frame = int(1.0 / fps) * 1000
-    frame.save(fp=save_fn, format='GIF', append_images=frames,
-               save_all=True, duration=ms_per_frame, loop=0)
-
 
 def record(model, agent):
-    frames = list(reversed(agent.cur_frames))
+    frames = list(agent.cur_frames)
     epsilon = 0.2
     done = False
     while not done:
         reward, done = agent.play_step(model, epsilon)
-        frames += list(reversed(agent.cur_frames))
+        frames += list(agent.cur_frames)
 
     save_gif("test.gif", frames, 10)
+    save_video("test.mp4", frames, 10)
+
+
+class DQNLightning(pl.LightningModule):
+    def __init__(self,
+                 model_class,
+                 model_kwargs,
+                 optimizer_class,
+                 optimizer_kwargs,
+                 scheduler_class,
+                 scheduler_kwargs,
+                 criterion,
+                 monitor,
+                 metrics,
+                 replay_size,
+                 frame_repeat,
+                 state_stack_size,
+                 random_state=42,):
+
+        super().__init__()
+        self.save_hyperparameters()
+        pl.seed_everything(random_state)
+
+        self.online_model = model_class(**model_kwargs)
+        self.target_model = model_class(**model_kwargs)
+        self.optimizer = optimizer_class(self.model.parameters(),
+                                         **optimizer_kwargs)
+        self.scheduler = scheduler_class(self.optimizer, **scheduler_kwargs)
+
+        self.criterion = criterion
+        self.monitor = monitor
+        self.metrics = metrics
+
+
+        self.game, self.actions = init_game("basic", random_state)
+        self.exp_replay_buffer = ExperienceReplayBuffer(replay_size)
+        self.agent = Agent(self.game, self.actions, self.exp_replay_buffer,
+                          frame_repeat=frame_repeat, state_stack_size=state_stack_size)
+        self.populate()
+
+
+    def populate(self, n_steps):
+        """ fill experience replay buffer before training """
+        for _ in range(n_steps):
+            self.agent.play_step(self.oline_model, epsilon=1.0)
+
+
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx):
+        imgs, targets = batch
+        outs = self(imgs)
+        loss = self.criterion(outs, targets)
+        self.log("train_loss",
+                 loss,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True,
+                 logger=True)
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        imgs, targets = batch
+        outs = self(imgs)
+        loss = self.criterion(outs, targets)
+        self.log("val_loss",
+                 loss,
+                 prog_bar=True,
+                 on_step=False,
+                 on_epoch=True,
+                 logger=True)
+
+        scores = {}
+        for metric_name, metric in  self.metrics.items():
+            scores[f"val_{metric_name}"] = metric(outs, targets)
+
+        self.log_dict(scores,
+                      prog_bar=False,
+                      on_step=False,
+                      on_epoch=True,
+                      logger=True)
+        return loss
+
+    def configure_optimizers(self):
+        scheduler_info = {
+            "scheduler": self.scheduler,
+            "monitor": self.monitor,
+            'interval': 'epoch',
+        }
+        return [self.optimizer], [scheduler_info]
+
 
 def main():
-    pl.seed_everything(42)
+    random_state = 42
+    pl.seed_everything(random_state)
 
     # TODO init game
-    game, actions = init_game("deadly_corridor")
+    # game, actions = init_game("deadly_corridor")
+    game, actions = init_game("basic", random_state)
 
-    # TODO init replay buffer
-    exp_replay_buffer = ExperienceReplayBuffer(10000)
+    # # TODO init replay buffer
+    # exp_replay_buffer = ExperienceReplayBuffer(10000)
 
-    # TODO init Agent with ReplayBuffer and Doom game as a parasm
-    agent = Agent(game, actions, exp_replay_buffer)
+    # # TODO init Agent with ReplayBuffer and Doom game as a parasm
+    # agent = Agent(game, actions, exp_replay_buffer)
 
-    model = DummyQNet(len(actions))
-    record(model, agent)
+    # model = DummyQNet(len(actions))
+    # record(model, agent)
 
-    # TODO fill ReplayBuffer
+    # # TODO fill ReplayBuffer
+
+    # model = DuelQNet(len(actions), 3, "usual")
+    model = DuelQNet(len(actions), 3, "effnet")
+    x = torch.rand(5, 3, 96, 128)
+    out = model(x)
+    print(out.shape)
 
 
 if __name__ == "__main__":
