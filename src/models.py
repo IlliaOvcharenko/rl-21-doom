@@ -83,8 +83,9 @@ class DuelQNet(torch.nn.Module):
 if __name__ == "__main__":
     # TODO test models
     # model = DuelQNet(len(actions), 3, "usual")
-    model = DuelQNet(len(actions), 3, "effnet")
-    x = torch.rand(5, 3, 96, 128)
+    model = DuelQNet(8, 12, "effnet")
+    x = torch.rand(64, 12, 128, 96).float()
+    print(x.dtype)
     out = model(x)
     print(out.shape)
 

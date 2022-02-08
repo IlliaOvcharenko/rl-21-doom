@@ -2,6 +2,7 @@ import sys,os
 sys.path.append(os.getcwd())
 
 import torch
+import torchvision
 import cv2
 
 import numpy as np
@@ -12,6 +13,7 @@ from collections import deque
 from itertools import product
 from pathlib import Path
 from fire import Fire
+from tqdm.cli import tqdm
 
 from src.models import (DuelQNet,
                         DummyQNet)
@@ -55,9 +57,63 @@ class ExperienceReplayBuffer:
     def append(self, item):
         return self.mem.append(item)
 
-    def sample(self, batch_size):
+    # def sample(self, batch_size):
+    #     # TODO non uniform sampling from replay buffer (prioritized)
+    #     # return np.random.choice(self.buffer, batch_size, replace=False)
+    #     indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+    #     states, actions, rewards, next_states, dones = zip(*(self.buffer[idx] for idx in indices))
+
+    #     return (
+    #         np.array(states),
+    #         np.array(actions),
+    #         np.array(rewards, dtype=np.float32),
+    #         np.array(dones, dtype=np.bool),
+    #         np.array(next_states),
+    #     )
+
+    def sample(self):
         # TODO non uniform sampling from replay buffer (prioritized)
-        return np.random.choice(self.buffer, batch_size, replace=False)
+        # return np.random.choice(self.buffer, batch_size, replace=False)
+        idx = np.random.choice(range(len(self.mem)))
+        item = self.mem[idx]
+        # print(len(item))
+        return item
+
+
+# class RLDataset(torch.utils.data.datasets.IterableDataset):
+#     def __init__(self, buffer: ReplayBuffer, sample_size: int = 200) -> None:
+#         self.buffer = buffer
+#         self.sample_size = sample_size
+
+#     def __iter__(self) -> Tuple:
+#         states, actions, rewards, dones, new_states = self.buffer.sample(self.sample_size)
+#         for i in range(len(dones)):
+#             yield states[i], actions[i], rewards[i], new_states[i], dones[i]
+
+class RLDataset(torch.utils.data.dataset.Dataset):
+    def __init__(self, buffer, steps_per_epoch):
+        self.buffer = buffer
+        self.steps_per_epoch = steps_per_epoch
+
+    def state_preproc(state):
+        state = cv2.resize(state, (128, 96))
+        state = np.transpose(state, (2, 0, 1))
+        state = state.astype(float) / 255.0
+        # state = torch.tensor(state).float()
+        # state = torchvision.transforms.functional.to_tensor(state)
+        # state = state / 255.0
+        # state = state.double()
+        state = torch.from_numpy(state).float()
+        return state
+
+    def __getitem__(self, idx):
+        state, action, reward, next_state, dones = self.buffer.sample()
+        state = RLDataset.state_preproc(state)
+        next_state = RLDataset.state_preproc(next_state)
+        return (state, action, reward, next_state, dones)
+
+    def __len__(self):
+        return self.steps_per_epoch
 
 
 class StatesDeque:
@@ -76,12 +132,12 @@ class StatesDeque:
 
     def stack(self):
         # print([f.shape for f in self.mem])
-        return np.stack(self.mem)
+        # return np.stack(self.mem)
+        return np.concatenate(self.mem, 2)
 
     def append_and_stack(self, state):
         self.append(state)
         return self.stack()
-
 
 class Agent:
     """ interact with doom env """
@@ -123,12 +179,14 @@ class Agent:
         self.cur_frames.append(state)
         self.states_deque.append(state)
 
-    def get_action(self, state, model, epsilon):
+    def get_action(self, state, model, epsilon, device):
         if np.random.random() < epsilon:
             action_idx = np.random.choice(range(len(self.actions)))
-            action = self.actions[action_idx]
+            # action = self.actions[action_idx]
         else:
-            state = torch.tensor([state])
+            state = RLDataset.state_preproc(state)
+            state = state.unsqueeze(0).to(device)
+
 
             # if device not in ["cpu"]:
                 # state = state.cuda(device)
@@ -136,15 +194,15 @@ class Agent:
             q_values = model(state)
             _, action_idx = torch.max(q_values, dim=1)
             action_idx = int(action_idx.item())
-            action = self.actions[action_idx]
-        return action
+            # action = self.actions[action_idx]
+        return action_idx
 
     @torch.no_grad()
-    def play_step(self, model, epsilon):
+    def play_step(self, model, epsilon, device):
         state = self.states_deque.stack()
-        action = self.get_action(state, model, epsilon)
+        action = self.get_action(state, model, epsilon, device)
 
-        self.game.set_action(action)
+        self.game.set_action(self.actions[action])
         next_state = np.zeros(self.screen_shape)
         for _ in range(self.frame_repeat):
             self.game.advance_action()
@@ -190,79 +248,130 @@ class DQNLightning(pl.LightningModule):
                  optimizer_kwargs,
                  scheduler_class,
                  scheduler_kwargs,
+
                  criterion,
                  monitor,
-                 metrics,
-                 replay_size,
-                 frame_repeat,
-                 state_stack_size,
+                 # metrics,
+
+                 replay_size=10000,
+                 frame_repeat=4,
+                 state_stack_size=4,
+                 sync_rate=100,
+                 discount=0.99,
+                 batch_size=64,
+                 steps_per_epoch=2000,
+
+                 epsilon_start=1.0,
+                 epsilon_decay=0.996,
+                 epsilon_min=0.1,
+
                  random_state=42,):
 
         super().__init__()
         self.save_hyperparameters()
         pl.seed_everything(random_state)
 
+        self.game, self.actions = init_game("basic", random_state)
+        self.exp_replay_buffer = ExperienceReplayBuffer(replay_size)
+        self.agent = Agent(self.game, self.actions, self.exp_replay_buffer,
+                          frame_repeat=frame_repeat, state_stack_size=state_stack_size)
+        model_kwargs["action_space_size"] = len(self.actions)
+
         self.online_model = model_class(**model_kwargs)
         self.target_model = model_class(**model_kwargs)
-        self.optimizer = optimizer_class(self.model.parameters(),
+        self.sync_rate = sync_rate
+
+        self.optimizer = optimizer_class(self.online_model.parameters(),
                                          **optimizer_kwargs)
         self.scheduler = scheduler_class(self.optimizer, **scheduler_kwargs)
 
         self.criterion = criterion
         self.monitor = monitor
-        self.metrics = metrics
+        # self.metrics = metrics
 
 
-        self.game, self.actions = init_game("basic", random_state)
-        self.exp_replay_buffer = ExperienceReplayBuffer(replay_size)
-        self.agent = Agent(self.game, self.actions, self.exp_replay_buffer,
-                          frame_repeat=frame_repeat, state_stack_size=state_stack_size)
-        self.populate()
+        self.epsilon = epsilon_start
+        self.epsilon_decay = epsilon_decay
+        self.epsilon_min = epsilon_min
+
+        self.discount = discount
+        self.batch_size = batch_size
+        self.steps_per_epoch = steps_per_epoch
+
+        self.total_reward = 0
+
+        self.populate(batch_size)
 
 
     def populate(self, n_steps):
         """ fill experience replay buffer before training """
-        for _ in range(n_steps):
-            self.agent.play_step(self.oline_model, epsilon=1.0)
+        for _ in tqdm(range(n_steps), "fill replay buffer"):
+            self.agent.play_step(self.online_model, epsilon=1.0, device="cpu")
 
 
     def forward(self, x):
-        return self.model(x)
+        return self.online_model(x)
+
+    def update_epsilon(self):
+        if self.epsilon > self.epsilon_min:
+            self.epsilon *= self.epsilon_decay
+        else:
+            self.epsilon = self.epsilon_min
+
+    def calc_loss(self, batch):
+        states, actions, rewards, next_states, dones = batch
+        state_action_values = self.online_model(states) \
+                                  .gather(1, actions.unsqueeze(-1)) \
+                                  .squeeze(-1)
+
+        with torch.no_grad():
+            # selected_actions = idx = self.online_model(next_states).argmax(1)
+            # next_state_values = self.target_model(next_states) \
+                                    # .gather(1, selected_actions)
+            next_state_values = self.target_model(next_states).max(1)[0]
+            next_state_values[dones] = 0.0
+            next_state_values = next_state_values.detach()
+
+        expected_state_action_values = next_state_values * self.discount + rewards
+        expected_state_action_values = expected_state_action_values.float()
+        loss = self.criterion(state_action_values, expected_state_action_values)
+        return loss
 
     def training_step(self, batch, batch_idx):
-        imgs, targets = batch
-        outs = self(imgs)
-        loss = self.criterion(outs, targets)
-        self.log("train_loss",
-                 loss,
-                 prog_bar=True,
-                 on_step=False,
-                 on_epoch=True,
-                 logger=True)
+        device = self.get_device(batch)
+        self.update_epsilon()
 
-        return loss
+        reward, done = self.agent.play_step(self.online_model, self.epsilon, device)
 
-    def validation_step(self, batch, batch_idx):
-        imgs, targets = batch
-        outs = self(imgs)
-        loss = self.criterion(outs, targets)
-        self.log("val_loss",
-                 loss,
-                 prog_bar=True,
-                 on_step=False,
-                 on_epoch=True,
-                 logger=True)
+        if done:
+            self.total_reward = self.agent.game.get_total_reward()
 
-        scores = {}
-        for metric_name, metric in  self.metrics.items():
-            scores[f"val_{metric_name}"] = metric(outs, targets)
+        loss = self.calc_loss(batch)
 
-        self.log_dict(scores,
-                      prog_bar=False,
-                      on_step=False,
+        logs = {
+            "total_reward": torch.tensor(self.total_reward),
+            "reward": torch.tensor(reward),
+            "train_loss": loss,
+        }
+        self.log_dict(logs,
+                      prog_bar=True,
+                      on_step=True,
                       on_epoch=True,
                       logger=True)
+
+        # Update target model
+        # TODO or every training_epoch_end
+        if self.global_step % self.sync_rate == 0:
+            self.target_model.load_state_dict(self.online_model.state_dict())
         return loss
+
+    def train_dataloader(self):
+        dataset = RLDataset(self.exp_replay_buffer, self.steps_per_epoch)
+        dataloader = torch.utils.data.DataLoader(
+            dataset=dataset,
+            batch_size=self.batch_size,
+        )
+        return dataloader
 
     def configure_optimizers(self):
         scheduler_info = {
@@ -272,14 +381,17 @@ class DQNLightning(pl.LightningModule):
         }
         return [self.optimizer], [scheduler_info]
 
+    def get_device(self, batch):
+        return batch[0].device.index if self.on_gpu else "cpu"
+
 
 def main():
-    random_state = 42
-    pl.seed_everything(random_state)
+    # random_state = 42
+    # pl.seed_everything(random_state)
 
     # TODO init game
     # game, actions = init_game("deadly_corridor")
-    game, actions = init_game("basic", random_state)
+    # game, actions = init_game("basic", random_state)
 
     # # TODO init replay buffer
     # exp_replay_buffer = ExperienceReplayBuffer(10000)
@@ -292,11 +404,55 @@ def main():
 
     # # TODO fill ReplayBuffer
 
-    # model = DuelQNet(len(actions), 3, "usual")
-    model = DuelQNet(len(actions), 3, "effnet")
-    x = torch.rand(5, 3, 96, 128)
-    out = model(x)
-    print(out.shape)
+    expr = DQNLightning(
+        DuelQNet,
+        {"in_channels": 3*4,  "encoder_mode": "usual"},
+
+        torch.optim.Adam,
+        {"lr": 0.01},
+
+        torch.optim.lr_scheduler.ReduceLROnPlateau,
+        {"patience": 10, "mode": "min", "factor": 0.6},
+
+        monitor="train_loss",
+        replay_size=10000,
+        frame_repeat=4,
+        sync_rate=2000,
+        state_stack_size=4,
+        discount=0.99,
+        batch_size=64,
+        steps_per_epoch=2000,
+
+        epsilon_start=1.0,
+        epsilon_decay=0.996,
+        epsilon_min=0.1,
+
+        random_state=42,
+    )
+
+    models_folder = Path("models")
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        dirpath=models_folder,
+        filename="{epoch}-{step}-{train_loss:.4f}",
+        mode="min",
+        monitor="train_loss",
+    )
+
+    logs_folder = Path("logs")
+    tb_logger = pl.loggers.TensorBoardLogger(logs_folder)
+    lr_logger = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
+    trainer = pl.Trainer(
+        callbacks=[checkpoint_callback, lr_logger],
+        gpus=1,
+        max_epochs=10,
+        deterministic=True,
+
+        logger=tb_logger,
+        log_every_n_steps=1,
+        flush_logs_every_n_steps=1,
+    )
+
+    trainer.fit(expr)
 
 
 if __name__ == "__main__":
