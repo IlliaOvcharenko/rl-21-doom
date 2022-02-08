@@ -7,6 +7,15 @@ vizdoom-crash.log
 archive/
 
 
+# Models
+models/*
+!models/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
