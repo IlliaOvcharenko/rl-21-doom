@@ -24,9 +24,11 @@ from src.utils import (compose_model_name,
                        save_episodes)
 
 
-def main():
-    game_scenario="basic"
-    # game_scenario="deadly_corridor"
+def main(
+    n_epoches=30,
+    n_episodes_to_play=5,
+    game_scenario="basic",
+):
 
     expr = DQNLightning(
         DuelQNet,
@@ -80,8 +82,7 @@ def main():
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_logger],
         gpus=1,
-        # max_epochs=20,
-        max_epochs=1,
+        max_epochs=n_epoches,
         deterministic=True,
 
         logger=tb_logger,
@@ -90,7 +91,7 @@ def main():
     )
 
     trainer.fit(expr)
-    episodes = expr.agent.run_episodes(expr.online_model, 3)
+    episodes = expr.agent.run_episodes(expr.online_model, n_episodes_to_play)
     figs_folder = Path("figs")
     save_episodes(episodes, model_full_name, figs_folder)
 
