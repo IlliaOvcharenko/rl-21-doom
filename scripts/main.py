@@ -415,6 +415,8 @@ def main():
         {"patience": 10, "mode": "min", "factor": 0.6},
 
         monitor="train_loss",
+        criterion=torch.nn.MSELoss(),
+
         replay_size=10000,
         frame_repeat=4,
         sync_rate=2000,
