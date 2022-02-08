@@ -52,7 +52,7 @@ class DuelQNet(torch.nn.Module):
             self.encoder = torch.nn.Sequential(
                 effnet,
                 torch.nn.Linear(1280, 192),
-                torch.nn.BatchNorm1d(192),
+                # torch.nn.BatchNorm1d(192),
                 torch.nn.ReLU(),
                 torch.nn.Linear(192, 192),
             )
