@@ -19,26 +19,14 @@ from src.train import DQNLightning
 
 from src.models import (DuelQNet,
                         DummyQNet)
+from src.utils import (compose_model_name,
+                       get_next_model_version,
+                       save_episodes)
 
 
 def main():
-    # random_state = 42
-    # pl.seed_everything(random_state)
-
-    # TODO init game
-    # game, actions = init_game("deadly_corridor")
-    # game, actions = init_game("basic", random_state)
-
-    # # TODO init replay buffer
-    # exp_replay_buffer = ExperienceReplayBuffer(10000)
-
-    # # TODO init Agent with ReplayBuffer and Doom game as a parasm
-    # agent = Agent(game, actions, exp_replay_buffer)
-
-    # model = DummyQNet(len(actions))
-    # record(model, agent)
-
-    # # TODO fill ReplayBuffer
+    game_scenario="basic"
+    # game_scenario="deadly_corridor"
 
     expr = DQNLightning(
         DuelQNet,
@@ -65,26 +53,35 @@ def main():
         epsilon_decay=0.994,
         epsilon_min=0.1,
 
-        # game_scenario="deadly_corridor",
-        game_scenario="basic",
+        game_scenario=game_scenario,
         random_state=42,
     )
 
     models_folder = Path("models")
+    base_name = "dueldqn-basic"
+    next_version = get_next_model_version(base_name, models_folder)
+    model_full_name = compose_model_name(base_name, next_version)
+
+
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        dirpath=models_folder,
+        dirpath=models_folder / model_full_name,
         filename="{epoch}-{step}-{train_loss:.4f}",
         mode="min",
         monitor="train_loss",
     )
 
     logs_folder = Path("logs")
-    tb_logger = pl.loggers.TensorBoardLogger(logs_folder)
+    tb_logger = pl.loggers.TensorBoardLogger(
+        logs_folder,
+        name=base_name,
+        version=next_version,
+    )
     lr_logger = pl.callbacks.LearningRateMonitor(logging_interval='epoch')
     trainer = pl.Trainer(
         callbacks=[checkpoint_callback, lr_logger],
         gpus=1,
-        max_epochs=20,
+        # max_epochs=20,
+        max_epochs=1,
         deterministic=True,
 
         logger=tb_logger,
@@ -93,6 +90,9 @@ def main():
     )
 
     trainer.fit(expr)
+    episodes = expr.agent.run_episodes(expr.online_model, 3)
+    figs_folder = Path("figs")
+    save_episodes(episodes, model_full_name, figs_folder)
 
 
 if __name__ == "__main__":

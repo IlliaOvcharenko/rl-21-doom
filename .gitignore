@@ -15,6 +15,10 @@ models/*
 logs/*
 !logs/.gitkeep
 
+# Figs
+figs/*
+!figs/doom-exmpl.png
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
