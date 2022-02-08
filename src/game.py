@@ -146,7 +146,7 @@ class Agent:
 
 
     def run_episodes(self, model, n_episodes):
-        model = model.eval()
+        # model = model.eval()
         model =  model.cpu()
         episodes_info = [{ "frames": [], "reward": 0.0 } for _ in range(n_episodes)]
         for episode_idx in tqdm(range(n_episodes), desc="play episodes"):

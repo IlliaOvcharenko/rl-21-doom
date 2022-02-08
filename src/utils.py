@@ -22,7 +22,7 @@ def save_episodes(episodes_info, model_full_name, figs_folder):
     for episode_idx in range(len(episodes_info)):
         reward = episodes_info[episode_idx]["reward"]
         frames = episodes_info[episode_idx]["frames"]
-        sfn = episodes_folder / f"episode={episode_idx}-reward={reward}.gif"
+        sfn = episodes_folder / f"episode={episode_idx}-reward={reward:.4f}.gif"
         save_gif(sfn, frames, 10)
 
 

@@ -18,7 +18,8 @@ logs/*
 # Figs
 figs/*
 !figs/doom-exmpl.png
-
+!figs/basic-exmpl.gif
+!figs/deadly_corridor-exmpl.gif
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

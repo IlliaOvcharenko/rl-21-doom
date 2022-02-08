@@ -28,14 +28,21 @@ def main(
     n_epoches=30,
     n_episodes_to_play=5,
     game_scenario="basic",
+    replay_size=2000,
+    sync_rate=10,
+    batch_size=256,
+    steps_per_epoch=10000,
+    epsilon_decay=0.994,
+    encoder="usual",
+    lr=0.00025,
 ):
 
     expr = DQNLightning(
         DuelQNet,
-        {"in_channels": 3*4,  "encoder_mode": "usual"},
+        {"in_channels": 3*4,  "encoder_mode": encoder},
 
         torch.optim.Adam,
-        {"lr": 0.00025},
+        {"lr": lr},
 
         torch.optim.lr_scheduler.ReduceLROnPlateau,
         {"patience": 10000, "mode": "min", "factor": 0.6},
@@ -43,16 +50,16 @@ def main(
         monitor="train_loss",
         criterion=torch.nn.MSELoss(),
 
-        replay_size=2000,
+        replay_size=replay_size,
         frame_repeat=4,
-        sync_rate=10,
+        sync_rate=sync_rate,
         state_stack_size=4,
         discount=0.99,
-        batch_size=256,
-        steps_per_epoch=10000,
+        batch_size=batch_size,
+        steps_per_epoch=steps_per_epoch,
 
         epsilon_start=1.0,
-        epsilon_decay=0.994,
+        epsilon_decay=epsilon_decay,
         epsilon_min=0.1,
 
         game_scenario=game_scenario,
@@ -60,7 +67,7 @@ def main(
     )
 
     models_folder = Path("models")
-    base_name = "dueldqn-basic"
+    base_name = f"dueldqn-{game_scenario}"
     next_version = get_next_model_version(base_name, models_folder)
     model_full_name = compose_model_name(base_name, next_version)
 
@@ -92,6 +99,7 @@ def main(
 
     trainer.fit(expr)
     episodes = expr.agent.run_episodes(expr.online_model, n_episodes_to_play)
+    print(f"mean reward: {np.mean([e['reward'] for e in episodes])}")
     figs_folder = Path("figs")
     save_episodes(episodes, model_full_name, figs_folder)
 

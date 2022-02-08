@@ -63,8 +63,6 @@ class DQNLightning(pl.LightningModule):
 
         self.criterion = criterion
         self.monitor = monitor
-        # self.metrics = metrics
-
 
         self.epsilon = epsilon_start
         self.epsilon_decay = epsilon_decay
@@ -73,8 +71,6 @@ class DQNLightning(pl.LightningModule):
         self.discount = discount
         self.batch_size = batch_size
         self.steps_per_epoch = steps_per_epoch
-
-        # self.total_reward = 0
 
         self.populate(batch_size * 2)
 
@@ -121,9 +117,7 @@ class DQNLightning(pl.LightningModule):
         reward, total_reward, done = self.agent.play_step(self.online_model, self.epsilon, device)
 
         if done:
-            # print("total reward:", self.agent.game.get_total_reward())
-            print("total reward:", total_reward)
-        #     self.total_reward = self.agent.game.get_total_reward()
+            print("Episode finished, total reward:", total_reward)
 
         loss = self.calc_loss(batch)
 
@@ -142,7 +136,7 @@ class DQNLightning(pl.LightningModule):
         # Update target model
         # TODO or every training_epoch_end
         if self.global_step % self.sync_rate == 0:
-            print("update target model")
+            print("Update target model")
             self.target_model.load_state_dict(self.online_model.state_dict())
         return loss
 
