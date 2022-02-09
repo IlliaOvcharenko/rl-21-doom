@@ -1,4 +1,5 @@
-# 👾 Doom
+# 👾 Deep RL to solve Doom
+[Presentation link](https://docs.google.com/presentation/d/1JuceFMx2EBFC9ilfgkiLQLm4mhGATyf0hXnT7Ygi2kQ/edit?usp=sharing)
 
 <p align="center">
 <img width="320" height="240" align="center" src="figs/deadly_corridor-exmpl.gif"/>
