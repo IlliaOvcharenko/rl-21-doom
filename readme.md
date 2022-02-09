@@ -17,13 +17,11 @@ cd docker
 Run virtual screen buffer in you want to meditate how your model trains via VNC.
 ```
 ./run_virtual_display.sh
-
 ```
 
 Run training!
 
 ```
 pyhton scripts/run_train.py --n_epoches=10 --n_episode_to_play=10 --game_scenario="deadly_corridor" --encoder="effnet"
-
 ```
 
